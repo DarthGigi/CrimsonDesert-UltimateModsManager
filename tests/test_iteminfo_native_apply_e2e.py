@@ -2,7 +2,7 @@
 game patch) iteminfo binary, exercising the full path:
 
     Format 3 intent
-        -> build_iteminfo_intent_change (iteminfo_writer)
+        -> build_iteminfo_intent_changes (iteminfo_writer)
             -> parse_iteminfo_from_bytes (native parser)
             -> mutate dict
             -> serialize_iteminfo (native parser)
@@ -40,7 +40,7 @@ def test_format3_max_stack_count_apply_round_trip():
     and verify the patched binary parses back with the intended value.
     """
     from cdumm.engine.iteminfo_native_parser import parse_iteminfo_from_bytes
-    from cdumm.engine.iteminfo_writer import build_iteminfo_intent_change
+    from cdumm.engine.iteminfo_writer import build_iteminfo_intent_changes
     from cdumm.engine.format3_handler import Format3Intent
 
     body = _LIVE_BODY.read_bytes()
@@ -63,11 +63,13 @@ def test_format3_max_stack_count_apply_round_trip():
         new=new_value,
     )
 
-    change = build_iteminfo_intent_change(body, [intent])
-    assert change is not None, (
-        "build_iteminfo_intent_change returned None for a valid intent")
+    changes = build_iteminfo_intent_changes(body, [intent])
+    assert changes, (
+        "build_iteminfo_intent_changes returned [] for a valid intent")
+    pabgb_change = changes[0]
+    assert pabgb_change.get("_target_file") == "iteminfo.pabgb"
 
-    new_bytes = bytes.fromhex(change["patched"])
+    new_bytes = bytes.fromhex(pabgb_change["patched"])
     assert len(new_bytes) == len(body), (
         f"patched length {len(new_bytes)} != vanilla length {len(body)} "
         f"(fixed-size primitive shouldn't change total size)"
@@ -109,7 +111,7 @@ def test_format3_list_of_dict_apply_round_trip():
     list-of-dict path that still exists).
     """
     from cdumm.engine.iteminfo_native_parser import parse_iteminfo_from_bytes
-    from cdumm.engine.iteminfo_writer import build_iteminfo_intent_change
+    from cdumm.engine.iteminfo_writer import build_iteminfo_intent_changes
     from cdumm.engine.format3_handler import Format3Intent
 
     body = _LIVE_BODY.read_bytes()
@@ -131,10 +133,12 @@ def test_format3_list_of_dict_apply_round_trip():
         new=new_value,
     )
 
-    change = build_iteminfo_intent_change(body, [intent])
-    assert change is not None
+    changes = build_iteminfo_intent_changes(body, [intent])
+    assert changes
+    pabgb_change = changes[0]
+    assert pabgb_change.get("_target_file") == "iteminfo.pabgb"
 
-    new_bytes = bytes.fromhex(change["patched"])
+    new_bytes = bytes.fromhex(pabgb_change["patched"])
     new_items = parse_iteminfo_from_bytes(new_bytes)
     new_target = next(it for it in new_items if it["key"] == target_key)
     assert new_target["equip_passive_skill_list"] == new_value
@@ -147,11 +151,11 @@ def test_format3_list_of_dict_apply_round_trip():
 def test_format3_mixed_primitive_and_list_of_dict_apply():
     """Real production load shape: a single mod batches multiple
     intents on the same item, mixing primitive and list-of-dict
-    fields. Batched through one build_iteminfo_intent_change call,
+    fields. Batched through one build_iteminfo_intent_changes call,
     re-parsed, both fields must reflect their intents.
     """
     from cdumm.engine.iteminfo_native_parser import parse_iteminfo_from_bytes
-    from cdumm.engine.iteminfo_writer import build_iteminfo_intent_change
+    from cdumm.engine.iteminfo_writer import build_iteminfo_intent_changes
     from cdumm.engine.format3_handler import Format3Intent
 
     body = _LIVE_BODY.read_bytes()
@@ -187,11 +191,13 @@ def test_format3_mixed_primitive_and_list_of_dict_apply():
         ),
     ]
 
-    change = build_iteminfo_intent_change(body, intents)
-    assert change is not None, (
-        "build_iteminfo_intent_change returned None for two valid intents")
+    changes = build_iteminfo_intent_changes(body, intents)
+    assert changes, (
+        "build_iteminfo_intent_changes returned [] for two valid intents")
+    pabgb_change = changes[0]
+    assert pabgb_change.get("_target_file") == "iteminfo.pabgb"
 
-    new_bytes = bytes.fromhex(change["patched"])
+    new_bytes = bytes.fromhex(pabgb_change["patched"])
     new_items = parse_iteminfo_from_bytes(new_bytes)
     new_target = next(it for it in new_items if it["key"] == target_key)
     assert new_target["max_stack_count"] == new_stack
@@ -205,9 +211,9 @@ def test_format3_mixed_primitive_and_list_of_dict_apply():
 def test_format3_unknown_key_skipped_gracefully():
     """An intent targeting a key that doesn't exist in the table
     should be skipped, not crash. With no real intents surviving,
-    build_iteminfo_intent_change should return None.
+    build_iteminfo_intent_changes should return [].
     """
-    from cdumm.engine.iteminfo_writer import build_iteminfo_intent_change
+    from cdumm.engine.iteminfo_writer import build_iteminfo_intent_changes
     from cdumm.engine.format3_handler import Format3Intent
 
     body = _LIVE_BODY.read_bytes()
@@ -218,8 +224,8 @@ def test_format3_unknown_key_skipped_gracefully():
         op="set",
         new=42,
     )
-    change = build_iteminfo_intent_change(body, [intent])
-    assert change is None, (
-        "Expected None when no intent matched any real item, "
-        "got a change dict instead"
+    changes = build_iteminfo_intent_changes(body, [intent])
+    assert changes == [], (
+        "Expected [] when no intent matched any real item, "
+        f"got {changes!r} instead"
     )

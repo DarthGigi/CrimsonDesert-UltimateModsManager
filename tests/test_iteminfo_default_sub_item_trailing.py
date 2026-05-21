@@ -97,7 +97,7 @@ def test_format3_cooltime_intent_writes_at_correct_offset():
     import json
     from cdumm.engine.format3_handler import Format3Intent
     from cdumm.engine.iteminfo_writer import (
-        build_iteminfo_intent_change,
+        build_iteminfo_intent_changes,
     )
 
     vanilla = _vanilla_path().read_bytes()
@@ -109,10 +109,14 @@ def test_format3_cooltime_intent_writes_at_correct_offset():
     intent2 = Format3Intent(
         entry="anything", key=2200,
         field="enchant_data_list", op="set", new=[], old=None)
-    change = build_iteminfo_intent_change(vanilla, [intent, intent2])
-    if change is None:
+    changes = build_iteminfo_intent_changes(vanilla, [intent, intent2])
+    if not changes:
         pytest.fail("writer produced no change")
-    new_bytes = bytes.fromhex(change["patched"])
+    # The first change is always the .pabgb body; a sibling .pabgh
+    # may follow when serialization shifts entry offsets.
+    pabgb_change = changes[0]
+    assert pabgb_change.get("_target_file") == "iteminfo.pabgb"
+    new_bytes = bytes.fromhex(pabgb_change["patched"])
 
     # The on-disk cooltime for item 1001250 sits at vanilla offset
     # 4166238 (record start 4165515 + record-relative 723). Verified

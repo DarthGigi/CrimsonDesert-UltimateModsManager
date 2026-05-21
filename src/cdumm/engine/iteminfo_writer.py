@@ -17,10 +17,12 @@ post-2026-04-29 game patch layout.
 """
 from __future__ import annotations
 import logging
-from typing import TYPE_CHECKING, Optional
+import struct
+from typing import TYPE_CHECKING
 
 from cdumm.engine.iteminfo_native_parser import (
-    parse_iteminfo_from_bytes, serialize_iteminfo,
+    parse_iteminfo_from_bytes,
+    serialize_iteminfo_with_offsets,
 )
 
 if TYPE_CHECKING:
@@ -159,16 +161,69 @@ def _resolve_path_target(
     return (cur, last_val)
 
 
-def build_iteminfo_intent_change(
+def _rebuild_iteminfo_pabgh(
+    vanilla_header: bytes,
+    new_offsets: list[tuple[int, int]],
+) -> bytes | None:
+    """Build a new .pabgh by copying each vanilla entry's (key, hash)
+    and substituting the entry's new byte offset from
+    ``serialize_iteminfo_with_offsets``.
+
+    Returns None when the header doesn't match the expected
+    ``u16 count`` + ``count * (u32 key, u32 offset)`` framing or a key
+    present in the vanilla header is missing from ``new_offsets`` — in
+    either case the caller falls back to emitting only the .pabgb
+    change, accepting that subsequent item lookups may shift past the
+    growth point. Same framing as multichangeinfo_writer.parse_pabgh.
+    """
+    try:
+        if len(vanilla_header) < 2:
+            return None
+        count = struct.unpack_from("<H", vanilla_header, 0)[0]
+        if count == 0 or 2 + count * 8 > len(vanilla_header):
+            return None
+    except struct.error:
+        return None
+
+    new_by_key = dict(new_offsets)
+    out = bytearray(struct.pack("<H", count))
+    for i in range(count):
+        pos = 2 + i * 8
+        try:
+            key, _vanilla_offset = struct.unpack_from(
+                "<II", vanilla_header, pos)
+        except struct.error:
+            return None
+        new_off = new_by_key.get(key)
+        if new_off is None:
+            logger.warning(
+                "iteminfo .pabgh rebuild: key %d in vanilla index but "
+                "not in serialised offsets; aborting rebuild so the "
+                "vanilla .pabgh stays in place.", key)
+            return None
+        out += struct.pack("<II", key, new_off)
+    return bytes(out)
+
+
+def build_iteminfo_intent_changes(
     vanilla_body: bytes,
     intents: "list[Format3Intent]",
-) -> Optional[dict]:
+    vanilla_header: bytes | None = None,
+) -> list[dict]:
     """Apply all provided intents to a parsed copy of vanilla
-    iteminfo.pabgb and return a single whole-file v2 change dict.
+    iteminfo.pabgb and return v2-shape change dicts.
 
-    Returns None if no intents touched a real record or all intents
-    failed (so the caller can fall back to the regular per-intent
-    path).
+    Returns ``[]`` when no intents touched a real record or all intents
+    failed (so the caller falls through to the regular per-intent
+    path). Otherwise returns:
+
+      * one ``iteminfo.pabgb`` change covering the full mutated body;
+      * if ``vanilla_header`` is provided AND serialization changed
+        the table's size, a second ``iteminfo.pabgh`` change with
+        regenerated entry offsets so the game's hash→offset index
+        keeps tracking the right entry starts. Without that, items
+        past the growth point get looked up at stale offsets and the
+        game reads adjacent bytes (#105 pitonpp).
 
     Per-intent failures (unknown key, unsupported field) are logged
     and skipped; surviving intents still produce their effect.
@@ -177,7 +232,7 @@ def build_iteminfo_intent_change(
         items = parse_iteminfo_from_bytes(vanilla_body)
     except Exception as e:
         logger.error("iteminfo parse failed: %s", e, exc_info=True)
-        return None
+        return []
 
     by_key = {it["key"]: it for it in items}
     applied = 0
@@ -298,18 +353,18 @@ def build_iteminfo_intent_change(
                 "(%d non-'set' op, %d unknown key, %d unknown field). "
                 "No change emitted.",
                 skip_total, skipped_op, skipped_key, skipped_field)
-        return None
+        return []
 
     try:
-        new_bytes = serialize_iteminfo(items)
+        new_bytes, new_offsets = serialize_iteminfo_with_offsets(items)
     except Exception as e:
         logger.error("iteminfo serialize failed: %s", e, exc_info=True)
-        return None
+        return []
 
     if new_bytes == vanilla_body:
         # Intents resolved but produced no byte difference (e.g.,
         # `set` to the same value). No change to emit.
-        return None
+        return []
 
     skip_total = skipped_op + skipped_key + skipped_field
     if skip_total:
@@ -328,9 +383,31 @@ def build_iteminfo_intent_change(
     else:
         label = f"iteminfo Format 3 intents ({applied} applied)"
 
-    return {
+    changes: list[dict] = [{
         "offset": 0,
         "original": vanilla_body.hex(),
         "patched": new_bytes.hex(),
         "label": label,
-    }
+        "_target_file": "iteminfo.pabgb",
+    }]
+
+    # Regenerate the companion .pabgh when serialization shifted entry
+    # offsets — otherwise the game's hash→offset lookup reads from
+    # stale vanilla offsets and items past the growth point come back
+    # as adjacent items' bytes (#105 pitonpp Buffed Axiom Bracelet).
+    # Same-size mutations leave .pabgh alone; rebuilding would be a
+    # no-op and risks dropping the entry if a key happened to fall out
+    # of the parsed item list.
+    if (vanilla_header is not None
+            and len(new_bytes) != len(vanilla_body)):
+        new_header = _rebuild_iteminfo_pabgh(vanilla_header, new_offsets)
+        if new_header is not None and new_header != vanilla_header:
+            changes.append({
+                "offset": 0,
+                "original": vanilla_header.hex(),
+                "patched": new_header.hex(),
+                "label": f"iteminfo .pabgh rebuild ({applied} applied)",
+                "_target_file": "iteminfo.pabgh",
+            })
+
+    return changes

@@ -59,7 +59,7 @@ def test_iteminfo_writer_applies_enchant_data_list_intent():
     applied to vanilla, yield a table where the target item's
     enchant_data_list equals the intent's `new` value."""
     from cdumm.engine.iteminfo_writer import (
-        build_iteminfo_intent_change,
+        build_iteminfo_intent_changes,
     )
     from cdumm.engine.format3_handler import Format3Intent
     from cdumm.engine.crimson_rs_loader import get_crimson_rs
@@ -101,13 +101,15 @@ def test_iteminfo_writer_applies_enchant_data_list_intent():
         new=new_value,
     )
 
-    change = build_iteminfo_intent_change(vanilla, [intent])
-    assert change is not None, "Expected a change dict"
+    changes = build_iteminfo_intent_changes(vanilla, [intent])
+    assert changes, "Expected at least one change"
+    pabgb_change = changes[0]
+    assert pabgb_change.get("_target_file") == "iteminfo.pabgb"
     # The change is whole-file: offset 0, original=vanilla, patched=new bytes
-    assert change["offset"] == 0
-    assert bytes.fromhex(change["original"]) == vanilla
+    assert pabgb_change["offset"] == 0
+    assert bytes.fromhex(pabgb_change["original"]) == vanilla
 
-    new_bytes = bytes.fromhex(change["patched"])
+    new_bytes = bytes.fromhex(pabgb_change["patched"])
     new_items = crimson_rs.parse_iteminfo_from_bytes(new_bytes)
     new_items_by_key = {it["key"]: it for it in new_items}
     assert target_key in new_items_by_key
@@ -121,9 +123,9 @@ def test_iteminfo_writer_applies_enchant_data_list_intent():
                     reason="vanilla iteminfo extract not present")
 def test_iteminfo_writer_handles_unknown_key_gracefully():
     """An intent targeting a non-existent item key should be skipped
-    (return None) rather than crashing."""
+    (return []) rather than crashing."""
     from cdumm.engine.iteminfo_writer import (
-        build_iteminfo_intent_change,
+        build_iteminfo_intent_changes,
     )
     from cdumm.engine.format3_handler import Format3Intent
     from cdumm.engine.crimson_rs_loader import get_crimson_rs
@@ -136,6 +138,6 @@ def test_iteminfo_writer_handles_unknown_key_gracefully():
         entry="DoesNotExist", key=999_999_999,
         field="enchant_data_list", op="set", new=[],
     )
-    change = build_iteminfo_intent_change(vanilla, [intent])
-    # No matching key, no changes applied -> no change emitted
-    assert change is None
+    changes = build_iteminfo_intent_changes(vanilla, [intent])
+    # No matching key, no changes applied -> empty list emitted
+    assert changes == []

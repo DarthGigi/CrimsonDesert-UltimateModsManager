@@ -602,46 +602,46 @@ LIST_WRITERS: dict[tuple[str, str], str] = {
     # commonly-used ones here so validation accepts them; the writer
     # itself is the source of truth for what's actually applicable.
     ("iteminfo", "enchant_data_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "equip_passive_skill_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "occupied_equip_slot_data_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "item_tag_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "consumable_type_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "item_use_info_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "item_icon_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "sealable_item_info_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "sealable_character_info_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "sealable_gimmick_info_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "sealable_gimmick_tag_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "sealable_tribe_info_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "sealable_money_info_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "transmutation_material_gimmick_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "transmutation_material_item_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "transmutation_material_item_group_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "multi_change_info_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     ("iteminfo", "gimmick_tag_list"):
-        "iteminfo_writer.build_iteminfo_intent_change",
+        "iteminfo_writer.build_iteminfo_intent_changes",
     # Skill whole-table writer (vendored skillinfo_parser).
     ("skill", "_useResourceStatList"):
-        "skill_writer.build_skill_intent_change",
+        "skill_writer.build_skill_intent_changes",
     ("skill", "_buffLevelList"):
-        "skill_writer.build_skill_intent_change",
+        "skill_writer.build_skill_intent_changes",
 }
 
 

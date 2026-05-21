@@ -527,23 +527,24 @@ def _intents_to_v2_changes(
             return []
         out: list[dict] = []
         # Whole-table writer dispatch for the list-routable batch.
+        # Both writers return a list — `[.pabgb change]` for same-size
+        # mutations, `[.pabgb, .pabgh]` when serialization shifts entry
+        # offsets so the game's hash→offset index keeps tracking the
+        # right entry starts (#105 pitonpp).
         if list_routable:
             if table_name == "iteminfo":
                 from cdumm.engine.iteminfo_writer import (
-                    build_iteminfo_intent_change,
+                    build_iteminfo_intent_changes,
                 )
-                change = build_iteminfo_intent_change(
-                    vanilla_body, list(list_routable))
-                if change is not None:
-                    out.append(change)
+                out.extend(build_iteminfo_intent_changes(
+                    vanilla_body, list(list_routable),
+                    vanilla_header=vanilla_header))
             elif table_name == "skill":
                 from cdumm.engine.skill_writer import (
-                    build_skill_intent_change,
+                    build_skill_intent_changes,
                 )
-                change = build_skill_intent_change(
-                    vanilla_body, vanilla_header, list(list_routable))
-                if change is not None:
-                    out.append(change)
+                out.extend(build_skill_intent_changes(
+                    vanilla_body, vanilla_header, list(list_routable)))
         # Per-record field_schema dispatch for primitive intents on
         # no-PABGB-schema tables. Mirrors the standard primitive path
         # below but skips the PABGB schema walk entirely (we have a
@@ -855,26 +856,24 @@ def _intents_to_v2_changes(
 
     # Flush the iteminfo batch (whole-table writer): all collected
     # intents become a single offset=0 change covering the full
-    # iteminfo.pabgb body.
+    # iteminfo.pabgb body, plus an optional .pabgh sibling when the
+    # serialization shifted entry offsets (#105 pitonpp).
     if iteminfo_batch:
         from cdumm.engine.iteminfo_writer import (
-            build_iteminfo_intent_change,
+            build_iteminfo_intent_changes,
         )
-        iteminfo_change = build_iteminfo_intent_change(
-            vanilla_body, iteminfo_batch)
-        if iteminfo_change is not None:
-            out.append(iteminfo_change)
+        out.extend(build_iteminfo_intent_changes(
+            vanilla_body, iteminfo_batch,
+            vanilla_header=vanilla_header))
 
     # Same for skill: the skillinfo_parser needs the .pabgh
     # header to walk records, so we forward `vanilla_header` here.
     if skill_batch:
         from cdumm.engine.skill_writer import (
-            build_skill_intent_change,
+            build_skill_intent_changes,
         )
-        skill_change = build_skill_intent_change(
-            vanilla_body, vanilla_header, skill_batch)
-        if skill_change is not None:
-            out.append(skill_change)
+        out.extend(build_skill_intent_changes(
+            vanilla_body, vanilla_header, skill_batch))
 
     return out
 

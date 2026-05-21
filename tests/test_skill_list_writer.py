@@ -43,7 +43,7 @@ def test_skill_writer_applies_useResourceStatList_intent():
     """timuela's mod target: replace `_useResourceStatList` on
     Skill_CrowSuperDash (key 15045)."""
     from cdumm.engine.skill_writer import (
-        build_skill_intent_change, _get_parser,
+        build_skill_intent_changes, _get_parser,
     )
     from cdumm.engine.format3_handler import Format3Intent
 
@@ -71,12 +71,14 @@ def test_skill_writer_applies_useResourceStatList_intent():
         new=new_value,
     )
 
-    change = build_skill_intent_change(pabgb, pabgh, [intent])
-    assert change is not None
-    assert change["offset"] == 0
-    assert bytes.fromhex(change["original"]) == pabgb
+    changes = build_skill_intent_changes(pabgb, pabgh, [intent])
+    assert changes
+    pabgb_change = changes[0]
+    assert pabgb_change.get("_target_file") == "skill.pabgb"
+    assert pabgb_change["offset"] == 0
+    assert bytes.fromhex(pabgb_change["original"]) == pabgb
 
-    new_pabgb = bytes.fromhex(change["patched"])
+    new_pabgb = bytes.fromhex(pabgb_change["patched"])
     assert new_pabgb != pabgb
 
     new_entries = parser.parse_all(pabgh, new_pabgb)

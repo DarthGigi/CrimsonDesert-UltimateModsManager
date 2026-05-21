@@ -1,7 +1,7 @@
 """Hotfix regression test for GitHub #79 (UnLuckyLust, hhkbble).
 
 Background: v3.2.16 added an "additive write" branch to
-``build_iteminfo_intent_change`` that, when ``_resolve_field_name``
+``build_iteminfo_intent_changes`` that, when ``_resolve_field_name``
 returned None, fell through with ``target_field = intent.field`` if
 the field name was in ``SUPPORTED_FIELDS``. The intent was a
 mod that adds enchants to records like Axiom Bracelet which have
@@ -13,7 +13,7 @@ walks a fixed ``_ITEM_FIELDS`` schema that does NOT include
 ``enchant_data_list`` (the live binary's EnchantData layout has
 not been reverse-engineered). The added key was silently dropped
 at serialise time, ``new_bytes == vanilla_body`` was True, and
-``build_iteminfo_intent_change`` returned None, which the apply
+``build_iteminfo_intent_changes`` returned None, which the apply
 pipeline reported to the user as "0 byte changes".
 
 UnLuckyLust on GitHub #79 confirmed v3.2.16 still produced "0
@@ -34,7 +34,7 @@ import logging
 
 from cdumm.engine.iteminfo_writer import (
     SUPPORTED_FIELDS,
-    build_iteminfo_intent_change,
+    build_iteminfo_intent_changes,
 )
 from cdumm.engine.format3_handler import Format3Intent
 
@@ -83,10 +83,10 @@ def test_enchant_data_list_intent_logs_clear_skip_reason(caplog):
     # field-resolution step. Use empty bytes; the writer should
     # short-circuit cleanly without crashing.
     with caplog.at_level(logging.WARNING, logger="cdumm.engine.iteminfo_writer"):
-        change = build_iteminfo_intent_change(b"", [intent])
+        changes = build_iteminfo_intent_changes(b"", [intent])
 
     # Cannot produce a change for an unsupported field.
-    assert change is None
+    assert changes == []
 
     # The skip message must explicitly name enchant_data_list AND
     # say it is not currently writeable, so the user sees an

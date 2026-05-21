@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from cdumm.engine.format3_handler import Format3Intent
@@ -71,26 +71,32 @@ def _get_parser():
     return None
 
 
-def build_skill_intent_change(
+def build_skill_intent_changes(
     vanilla_body: bytes,
     vanilla_header: bytes,
     intents: "list[Format3Intent]",
-) -> Optional[dict]:
-    """Apply Format 3 intents to skill.pabgb and emit a single
-    offset=0 v2 change.
+) -> list[dict]:
+    """Apply Format 3 intents to skill.pabgb and emit v2 changes.
 
     Needs both .pabgb body AND .pabgh header (the parser requires
-    the index to walk records). Returns None when no intents
+    the index to walk records). Returns ``[]`` when no intents
     applied.
+
+    Returns ``[skill.pabgb change]`` for same-size mutations, or
+    ``[skill.pabgb change, skill.pabgh change]`` when serialization
+    shifts entry offsets — the vendored parser's ``serialize_all``
+    already returns both halves of the table; we just capture the
+    regenerated index alongside the body so the game's hash→offset
+    lookup keeps tracking the right entry starts (#105 pitonpp).
     """
     parser = _get_parser()
     if parser is None:
-        return None
+        return []
     try:
         entries = parser.parse_all(vanilla_header, vanilla_body)
     except Exception as e:
         logger.error("skill parse failed: %s", e, exc_info=True)
-        return None
+        return []
 
     by_key = {e["key"]: e for e in entries}
     applied = 0
@@ -134,16 +140,16 @@ def build_skill_intent_change(
                 "(%d non-'set' op, %d unknown key, %d unknown field). "
                 "No change emitted.",
                 skip_total, skipped_op, skipped_key, skipped_field)
-        return None
+        return []
 
     try:
-        _, new_pabgb = parser.serialize_all(entries)
+        new_pabgh, new_pabgb = parser.serialize_all(entries)
     except Exception as e:
         logger.error("skill serialize failed: %s", e, exc_info=True)
-        return None
+        return []
 
     if new_pabgb == vanilla_body:
-        return None
+        return []
 
     skip_total = skipped_op + skipped_key + skipped_field
     if skip_total:
@@ -162,9 +168,27 @@ def build_skill_intent_change(
     else:
         label = f"skill Format 3 intents ({applied} applied)"
 
-    return {
+    changes: list[dict] = [{
         "offset": 0,
         "original": vanilla_body.hex(),
         "patched": new_pabgb.hex(),
         "label": label,
-    }
+        "_target_file": "skill.pabgb",
+    }]
+
+    # Regenerate the companion .pabgh when serialization shifted entry
+    # offsets — vendored parser's serialize_all gives us the rebuilt
+    # index for free, we just need to ship it alongside the .pabgb so
+    # the game's hash→offset lookup doesn't read stale vanilla offsets
+    # past the growth point (#105 pitonpp, mirroring the iteminfo fix).
+    if (len(new_pabgb) != len(vanilla_body)
+            and new_pabgh != vanilla_header):
+        changes.append({
+            "offset": 0,
+            "original": vanilla_header.hex(),
+            "patched": new_pabgh.hex(),
+            "label": f"skill .pabgh rebuild ({applied} applied)",
+            "_target_file": "skill.pabgh",
+        })
+
+    return changes

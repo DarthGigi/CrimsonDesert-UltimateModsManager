@@ -1075,17 +1075,17 @@ def _apply_byte_patches(data: bytearray, changes: list[dict],
                 mismatched += 1
                 continue
 
-            if offset + len(patched_bytes) > len(data):
-                logger.warning("Patch at offset %d exceeds file size %d, skipping",
-                               offset, len(data))
-                # Record so the all-or-nothing filter taints the mod
-                # and the user sees the skip in the post-apply toast.
-                # /systematic-debugging finding 2026-05-05.
-                _record_skip(
-                    change, offset, None,
-                    f"offset {offset} exceeds file size {len(data)}")
-                continue
-
+            # Decode original_bytes BEFORE the bounds check so the
+            # check uses the right span. A replace covers
+            # len(original_bytes) of the buffer at `offset`, not
+            # len(patched_bytes) — the bytearray slice assignment
+            # below grows/shrinks the buffer if those differ.
+            # Bounding against len(patched_bytes) silently rejected
+            # legitimate size-growing whole-buffer replaces — the
+            # Format 3 whole-table writer emits exactly this shape
+            # (offset=0, original=full vanilla, patched=mutated
+            # body, sometimes larger). #105 pitonpp.
+            original_bytes = None
             if "original" in change:
                 try:
                     original_bytes = bytes.fromhex(change["original"])
@@ -1098,6 +1098,25 @@ def _apply_byte_patches(data: bytearray, changes: list[dict],
                                  f"malformed hex in 'original': {e}")
                     mismatched += 1
                     continue
+
+            bound_size = (len(original_bytes)
+                          if original_bytes is not None
+                          else len(patched_bytes))
+            if offset + bound_size > len(data):
+                logger.warning(
+                    "Patch at offset %d (bound %d bytes) exceeds "
+                    "file size %d, skipping",
+                    offset, bound_size, len(data))
+                # Record so the all-or-nothing filter taints the mod
+                # and the user sees the skip in the post-apply toast.
+                # /systematic-debugging finding 2026-05-05.
+                _record_skip(
+                    change, offset, None,
+                    f"offset {offset}+bound {bound_size} "
+                    f"exceeds file size {len(data)}")
+                continue
+
+            if original_bytes is not None:
                 size_delta = len(patched_bytes) - len(original_bytes)
                 actual = data[offset:offset + len(original_bytes)]
                 if actual != original_bytes:
@@ -1218,17 +1237,14 @@ def _apply_byte_patches(data: bytearray, changes: list[dict],
                     continue
 
             # Track size delta for replace ops that change size.
-            # The line 884 fromhex above is what catches malformed
-            # 'original' first; this branch is only reachable with
-            # valid hex. Wrap defensively against future refactors —
-            # cheap and keeps the apply loop crash-proof.
-            if "original" in change:
-                try:
-                    old_len = len(bytes.fromhex(change["original"]))
-                except ValueError:
-                    old_len = len(patched_bytes)
-            else:
-                old_len = len(patched_bytes)
+            # original_bytes was decoded above (before the bounds
+            # check); reuse to avoid a second 5 MB fromhex on the
+            # whole-table writer path. None means no 'original' field
+            # was supplied, in which case we're replacing
+            # len(patched_bytes) bytes verbatim.
+            old_len = (len(original_bytes)
+                       if original_bytes is not None
+                       else len(patched_bytes))
             data[offset:offset + old_len] = patched_bytes
             writes.append((original_offset, len(patched_bytes) - old_len))
             written_ranges.append(

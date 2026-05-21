@@ -247,13 +247,29 @@ def parse_iteminfo_from_bytes(data: bytes) -> list[dict]:
     return items
 
 
+def serialize_iteminfo_with_offsets(
+    items: list[dict],
+) -> tuple[bytes, list[tuple[int, int]]]:
+    """Return ``(serialized_bytes, [(key, byte_offset), ...])``.
+
+    The offsets mirror what ``.pabgh`` stores: each entry's starting
+    byte position in the serialized ``.pabgb``. Used by Format 3
+    whole-table apply to regenerate the companion ``.pabgh`` when
+    serialization changes per-item sizes (#105 pitonpp).
+    """
+    w = _Writer()
+    offsets: list[tuple[int, int]] = []
+    for it in items:
+        offsets.append((it["key"], len(w.buf)))
+        _write_item(w, it)
+    return bytes(w.buf), offsets
+
+
 def serialize_iteminfo(items: list[dict]) -> bytes:
     """Inverse of parse_iteminfo_from_bytes. The byte output must be
     identical to the input when items haven't been modified."""
-    w = _Writer()
-    for it in items:
-        _write_item(w, it)
-    return bytes(w.buf)
+    body, _ = serialize_iteminfo_with_offsets(items)
+    return body
 
 
 def parse_first_record_size(data: bytes) -> int:
