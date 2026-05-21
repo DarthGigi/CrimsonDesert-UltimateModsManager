@@ -90,23 +90,32 @@ def test_bounds_check_still_rejects_oversize_without_original(caplog):
         f"{[r.getMessage() for r in caplog.records]}")
 
 
+def _make_header(entries: list[tuple[int, int]]) -> bytes:
+    out = bytearray(struct.pack("<H", len(entries)))
+    for key, off in entries:
+        out += struct.pack("<II", key, off)
+    return bytes(out)
+
+
 def test_rebuild_iteminfo_pabgh_substitutes_offsets():
     """``_rebuild_iteminfo_pabgh`` keeps every vanilla key, in
     vanilla order, but rewrites each entry's offset to the value
-    supplied by ``serialize_iteminfo_with_offsets``. Sanity check
-    that doesn't need a live iteminfo fixture."""
+    supplied by ``serialize_iteminfo_with_offsets``."""
     from cdumm.engine.iteminfo_writer import _rebuild_iteminfo_pabgh
 
-    vanilla_offsets = [(101, 0), (202, 100), (303, 250)]
-    vanilla_header = bytearray(struct.pack("<H", len(vanilla_offsets)))
-    for key, off in vanilla_offsets:
-        vanilla_header += struct.pack("<II", key, off)
-    vanilla_header = bytes(vanilla_header)
+    vanilla_entries = [(101, 0), (202, 100), (303, 250)]
+    vanilla_header = _make_header(vanilla_entries)
+    # Parsed items in this happy-path test match the vanilla pabgh
+    # 1-for-1 (parser hit no walker merges).
+    parsed_vanilla = list(vanilla_entries)
+    # Mod grew the second item by 50: third item shifts by +50.
+    parsed_new = [(101, 0), (202, 100), (303, 300)]
 
-    # Mod grew the second item: third item shifts by +50.
-    new_offsets = [(101, 0), (202, 100), (303, 300)]
-
-    new_header = _rebuild_iteminfo_pabgh(vanilla_header, new_offsets)
+    new_header = _rebuild_iteminfo_pabgh(
+        vanilla_header, vanilla_body_len=400,
+        parsed_vanilla_offsets=parsed_vanilla,
+        parsed_new_offsets=parsed_new,
+    )
     assert new_header is not None
     count = struct.unpack_from("<H", new_header, 0)[0]
     assert count == 3
@@ -116,25 +125,79 @@ def test_rebuild_iteminfo_pabgh_substitutes_offsets():
         pos = 2 + i * 8
         k, off = struct.unpack_from("<II", new_header, pos)
         rebuilt.append((k, off))
-    assert rebuilt == new_offsets
+    assert rebuilt == parsed_new
 
 
-def test_rebuild_iteminfo_pabgh_returns_none_when_key_missing():
-    """If serialization dropped a key the vanilla header expected,
-    abort the rebuild — better to ship vanilla .pabgh than a partial
-    index that misses entries."""
+def test_rebuild_iteminfo_pabgh_recovers_absorbed_key():
+    """When the iteminfo parser merges two adjacent on-disk records
+    into one parsed item (walker absorbs the second record's bytes),
+    the absorbed key is missing from ``parsed_new_offsets`` but its
+    bytes still exist verbatim inside the container's serialized
+    blob. The rebuild must relocate the absorbed key by applying the
+    container's vanilla→new shift to the absorbed key's vanilla
+    offset, NOT refuse the rebuild outright (which would force a
+    fail-closed apply for any mod that triggers a walker merge —
+    pitonpp's My_ItemBuffs_Mod regression 2026-05-21)."""
     from cdumm.engine.iteminfo_writer import _rebuild_iteminfo_pabgh
 
-    vanilla_offsets = [(101, 0), (202, 100)]
-    vanilla_header = bytearray(struct.pack("<H", len(vanilla_offsets)))
-    for key, off in vanilla_offsets:
-        vanilla_header += struct.pack("<II", key, off)
-    vanilla_header = bytes(vanilla_header)
+    # Vanilla: three records (101 @ 0, 202 @ 100, 303 @ 250).
+    vanilla_entries = [(101, 0), (202, 100), (303, 250)]
+    vanilla_header = _make_header(vanilla_entries)
+    vanilla_body_len = 400
 
-    # Key 202 is missing from the serialised offsets.
-    new_offsets = [(101, 0)]
+    # Parser merged records 101 and 202 into a single parsed item
+    # (keyed 101, containing both records' bytes back-to-back). Only
+    # two items in the parsed list; key 202 is absorbed.
+    parsed_vanilla = [(101, 0), (303, 250)]
+    # Mod grew the merged 101+202 blob by +60 bytes: 303 shifts.
+    parsed_new = [(101, 0), (303, 310)]
 
-    assert _rebuild_iteminfo_pabgh(vanilla_header, new_offsets) is None
+    new_header = _rebuild_iteminfo_pabgh(
+        vanilla_header, vanilla_body_len,
+        parsed_vanilla_offsets=parsed_vanilla,
+        parsed_new_offsets=parsed_new,
+    )
+    assert new_header is not None, (
+        "absorbed-key recovery must succeed when the missing key sits "
+        "inside a container parsed item's vanilla bounds")
+    count = struct.unpack_from("<H", new_header, 0)[0]
+    assert count == 3  # rebuilt header must keep every vanilla key
+
+    rebuilt: dict[int, int] = {}
+    for i in range(count):
+        pos = 2 + i * 8
+        k, off = struct.unpack_from("<II", new_header, pos)
+        rebuilt[k] = off
+
+    assert rebuilt[101] == 0
+    assert rebuilt[303] == 310
+    # Container 101 grew by some delta; key 202 sits inside container
+    # 101 at vanilla offset 100. Its new offset = 100 + container's
+    # vanilla→new shift. The shift here is 0 (container start didn't
+    # move), so 202 maps to vanilla offset 100 unchanged. The +60
+    # growth fell inside the container after offset 100 and pushed
+    # 303 forward; 202 stays in place because its relative position
+    # within the container's blob is preserved.
+    assert rebuilt[202] == 100
+
+
+def test_rebuild_iteminfo_pabgh_returns_none_when_absorbed_key_unbounded():
+    """If a vanilla pabgh key sits outside every parsed item's
+    vanilla interval, recovery is impossible — refuse the rebuild
+    so the caller drops the apply rather than ship a broken index."""
+    from cdumm.engine.iteminfo_writer import _rebuild_iteminfo_pabgh
+
+    # Vanilla pabgh references a key at offset 500, but parsed items
+    # only cover bytes [0, 250). The absorbed key has no container.
+    vanilla_header = _make_header([(101, 0), (404, 500)])
+    parsed_vanilla = [(101, 0)]
+    parsed_new = [(101, 0)]
+
+    assert _rebuild_iteminfo_pabgh(
+        vanilla_header, vanilla_body_len=250,
+        parsed_vanilla_offsets=parsed_vanilla,
+        parsed_new_offsets=parsed_new,
+    ) is None
 
 
 def test_iteminfo_writer_refuses_grown_pabgb_when_pabgh_rebuild_fails(caplog):

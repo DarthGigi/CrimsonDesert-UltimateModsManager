@@ -216,17 +216,23 @@ def _find_next_record_start(
     return -1
 
 
-def parse_iteminfo_from_bytes(data: bytes) -> list[dict]:
-    """Parse an entire iteminfo.pabgb body to a list of item dicts.
+def parse_iteminfo_from_bytes_with_offsets(
+    data: bytes,
+) -> tuple[list[dict], list[tuple[int, int]]]:
+    """Same walk as :func:`parse_iteminfo_from_bytes`, additionally
+    returning each parsed item's vanilla byte offset.
 
-    Walks records back-to-back from offset 0 to len(data). Each
-    record self-describes its size via the schema, no .pabgh index
-    needed at parse time. When a record's prefab walker silently
-    over-consumes and the post-prefab boundary check needs an
-    rec_end anchor, sniff the next plausible record header and use
-    it as the bound.
+    Returns ``(items, [(key, vanilla_offset), ...])`` in walk order.
+    Used by Format 3 whole-table apply to recover the correct .pabgh
+    new-offset for keys the walker happened to absorb into a neighbour
+    (#105 pitonpp). When the walker merges two on-disk records into a
+    single parsed item, the merged item carries the *first* record's
+    key but its serialized blob still contains the second record's
+    bytes verbatim — the .pabgh fixup uses the merged item's vanilla→
+    new offset shift to relocate the absorbed key correctly.
     """
     items: list[dict] = []
+    offsets: list[tuple[int, int]] = []
     pos = 0
     while pos < len(data):
         rec_start = pos
@@ -242,8 +248,24 @@ def parse_iteminfo_from_bytes(data: bytes) -> list[dict]:
         if next_start < 0:
             next_start = len(data)
         r = _Reader(data, rec_start, rec_end=next_start)
-        items.append(_read_item(r))
+        item = _read_item(r)
+        items.append(item)
+        offsets.append((item["key"], rec_start))
         pos = r.pos
+    return items, offsets
+
+
+def parse_iteminfo_from_bytes(data: bytes) -> list[dict]:
+    """Parse an entire iteminfo.pabgb body to a list of item dicts.
+
+    Walks records back-to-back from offset 0 to len(data). Each
+    record self-describes its size via the schema, no .pabgh index
+    needed at parse time. When a record's prefab walker silently
+    over-consumes and the post-prefab boundary check needs an
+    rec_end anchor, sniff the next plausible record header and use
+    it as the bound.
+    """
+    items, _ = parse_iteminfo_from_bytes_with_offsets(data)
     return items
 
 

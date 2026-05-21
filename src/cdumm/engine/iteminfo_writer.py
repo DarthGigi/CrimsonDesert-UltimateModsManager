@@ -21,7 +21,7 @@ import struct
 from typing import TYPE_CHECKING
 
 from cdumm.engine.iteminfo_native_parser import (
-    parse_iteminfo_from_bytes,
+    parse_iteminfo_from_bytes_with_offsets,
     serialize_iteminfo_with_offsets,
 )
 
@@ -163,18 +163,34 @@ def _resolve_path_target(
 
 def _rebuild_iteminfo_pabgh(
     vanilla_header: bytes,
-    new_offsets: list[tuple[int, int]],
+    vanilla_body_len: int,
+    parsed_vanilla_offsets: list[tuple[int, int]],
+    parsed_new_offsets: list[tuple[int, int]],
 ) -> bytes | None:
-    """Build a new .pabgh by copying each vanilla entry's (key, hash)
-    and substituting the entry's new byte offset from
-    ``serialize_iteminfo_with_offsets``.
+    """Build a new .pabgh by walking the vanilla header and computing
+    each entry's new byte offset.
 
-    Returns None when the header doesn't match the expected
-    ``u16 count`` + ``count * (u32 key, u32 offset)`` framing or a key
-    present in the vanilla header is missing from ``new_offsets`` — in
-    either case the caller falls back to emitting only the .pabgb
-    change, accepting that subsequent item lookups may shift past the
-    growth point. Same framing as multichangeinfo_writer.parse_pabgh.
+    Two cases handled per entry:
+
+      * Key present in ``parsed_new_offsets`` — the iteminfo parser
+        produced an item for this key and the serializer wrote it at
+        a known new position. Use that position directly.
+
+      * Key absent from ``parsed_new_offsets`` — the walker absorbed
+        this record into a neighbour (the parser sometimes merges two
+        adjacent on-disk records into one parsed item when the first
+        record's prefab walker silently over-consumes). The absorbed
+        key's bytes still exist verbatim inside the container item's
+        serialized blob, just shifted by the container's vanilla→new
+        offset delta. Find the container by vanilla-offset containment
+        and apply the same shift to the absorbed key's vanilla offset.
+
+    Returns ``None`` only when the header doesn't match the expected
+    ``u16 count`` + ``count * (u32 key, u32 offset)`` framing, or
+    when an absorbed key can't be located inside any parsed item's
+    vanilla bounds (parser drift too severe — caller falls back to
+    refusing the apply). Same framing as
+    multichangeinfo_writer.parse_pabgh. (#105 pitonpp)
     """
     try:
         if len(vanilla_header) < 2:
@@ -185,22 +201,47 @@ def _rebuild_iteminfo_pabgh(
     except struct.error:
         return None
 
-    new_by_key = dict(new_offsets)
+    new_by_key = dict(parsed_new_offsets)
+
+    # Build container intervals: each parsed item covers vanilla bytes
+    # [vanilla_offset_i, vanilla_offset_{i+1}) (last item ends at body
+    # length). The corresponding new offset gives us the vanilla→new
+    # shift for keys absorbed inside this item.
+    containers: list[tuple[int, int, int]] = []  # (van_start, van_end, new_start)
+    for i, (_k, van_off) in enumerate(parsed_vanilla_offsets):
+        van_end = (parsed_vanilla_offsets[i + 1][1]
+                   if i + 1 < len(parsed_vanilla_offsets)
+                   else vanilla_body_len)
+        new_off = parsed_new_offsets[i][1]
+        containers.append((van_off, van_end, new_off))
+
+    def _resolve_absorbed(vanilla_off: int) -> int | None:
+        for van_start, van_end, new_start in containers:
+            if van_start <= vanilla_off < van_end:
+                return vanilla_off + (new_start - van_start)
+        return None
+
     out = bytearray(struct.pack("<H", count))
     for i in range(count):
         pos = 2 + i * 8
         try:
-            key, _vanilla_offset = struct.unpack_from(
+            key, vanilla_offset = struct.unpack_from(
                 "<II", vanilla_header, pos)
         except struct.error:
             return None
         new_off = new_by_key.get(key)
         if new_off is None:
-            logger.warning(
-                "iteminfo .pabgh rebuild: key %d in vanilla index but "
-                "not in serialised offsets; aborting rebuild so the "
-                "vanilla .pabgh stays in place.", key)
-            return None
+            new_off = _resolve_absorbed(vanilla_offset)
+            if new_off is None:
+                logger.warning(
+                    "iteminfo .pabgh rebuild: key %d at vanilla offset "
+                    "%d not found in any parsed item's vanilla bounds; "
+                    "refusing rebuild.", key, vanilla_offset)
+                return None
+            logger.debug(
+                "iteminfo .pabgh rebuild: key %d absorbed by walker "
+                "merge, relocated vanilla offset %d → new offset %d",
+                key, vanilla_offset, new_off)
         out += struct.pack("<II", key, new_off)
     return bytes(out)
 
@@ -229,7 +270,8 @@ def build_iteminfo_intent_changes(
     and skipped; surviving intents still produce their effect.
     """
     try:
-        items = parse_iteminfo_from_bytes(vanilla_body)
+        items, vanilla_offsets = (
+            parse_iteminfo_from_bytes_with_offsets(vanilla_body))
     except Exception as e:
         logger.error("iteminfo parse failed: %s", e, exc_info=True)
         return []
@@ -414,15 +456,17 @@ def build_iteminfo_intent_changes(
             applied, len(vanilla_body), len(new_bytes))
         return []
 
-    new_header = _rebuild_iteminfo_pabgh(vanilla_header, new_offsets)
+    new_header = _rebuild_iteminfo_pabgh(
+        vanilla_header,
+        len(vanilla_body),
+        vanilla_offsets,
+        new_offsets,
+    )
     if new_header is None:
         logger.error(
             "iteminfo writer: %d intent(s) applied and body grew by "
             "%d bytes, but the .pabgh rebuild could not produce a "
-            "complete index. Most common cause: the native iteminfo "
-            "parser couldn't recover every record in vanilla.pabgb "
-            "(salvage path skipped one), so a key referenced by "
-            "vanilla.pabgh is missing from the rebuilt offsets. "
+            "complete index even with absorbed-key recovery. "
             "Refusing to apply — shipping a grown .pabgb with the "
             "stale .pabgh would crash the game on load.",
             applied, len(new_bytes) - len(vanilla_body))
