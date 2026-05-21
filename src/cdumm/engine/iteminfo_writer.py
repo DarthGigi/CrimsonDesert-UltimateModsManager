@@ -383,31 +383,58 @@ def build_iteminfo_intent_changes(
     else:
         label = f"iteminfo Format 3 intents ({applied} applied)"
 
-    changes: list[dict] = [{
+    pabgb_change = {
         "offset": 0,
         "original": vanilla_body.hex(),
         "patched": new_bytes.hex(),
         "label": label,
         "_target_file": "iteminfo.pabgb",
-    }]
+    }
 
-    # Regenerate the companion .pabgh when serialization shifted entry
-    # offsets — otherwise the game's hash→offset lookup reads from
+    # Same-size mutations leave the .pabgh entirely correct (no entry
+    # offsets shifted), so we ship the .pabgb alone.
+    if len(new_bytes) == len(vanilla_body):
+        return [pabgb_change]
+
+    # Size-changing mutations require regenerating the companion
+    # .pabgh — the game's hash→offset lookup would otherwise read
     # stale vanilla offsets and items past the growth point come back
     # as adjacent items' bytes (#105 pitonpp Buffed Axiom Bracelet).
-    # Same-size mutations leave .pabgh alone; rebuilding would be a
-    # no-op and risks dropping the entry if a key happened to fall out
-    # of the parsed item list.
-    if (vanilla_header is not None
-            and len(new_bytes) != len(vanilla_body)):
-        new_header = _rebuild_iteminfo_pabgh(vanilla_header, new_offsets)
-        if new_header is not None and new_header != vanilla_header:
-            changes.append({
-                "offset": 0,
-                "original": vanilla_header.hex(),
-                "patched": new_header.hex(),
-                "label": f"iteminfo .pabgh rebuild ({applied} applied)",
-                "_target_file": "iteminfo.pabgh",
-            })
+    # If we don't have the vanilla header, or the rebuild can't
+    # produce a complete new index, REFUSE to apply: shipping a grown
+    # .pabgb with a stale .pabgh crashes the game on load. Returning
+    # [] surfaces "0 byte changes" to the user — confusing but
+    # recoverable, where a crash isn't.
+    if vanilla_header is None:
+        logger.error(
+            "iteminfo writer: %d intent(s) applied and serialization "
+            "changed body size (%d → %d) but vanilla_header was not "
+            "supplied; refusing to ship a grown .pabgb without a "
+            "matching .pabgh (game would crash on load).",
+            applied, len(vanilla_body), len(new_bytes))
+        return []
 
-    return changes
+    new_header = _rebuild_iteminfo_pabgh(vanilla_header, new_offsets)
+    if new_header is None:
+        logger.error(
+            "iteminfo writer: %d intent(s) applied and body grew by "
+            "%d bytes, but the .pabgh rebuild could not produce a "
+            "complete index. Most common cause: the native iteminfo "
+            "parser couldn't recover every record in vanilla.pabgb "
+            "(salvage path skipped one), so a key referenced by "
+            "vanilla.pabgh is missing from the rebuilt offsets. "
+            "Refusing to apply — shipping a grown .pabgb with the "
+            "stale .pabgh would crash the game on load.",
+            applied, len(new_bytes) - len(vanilla_body))
+        return []
+
+    return [
+        pabgb_change,
+        {
+            "offset": 0,
+            "original": vanilla_header.hex(),
+            "patched": new_header.hex(),
+            "label": f"iteminfo .pabgh rebuild ({applied} applied)",
+            "_target_file": "iteminfo.pabgh",
+        },
+    ]

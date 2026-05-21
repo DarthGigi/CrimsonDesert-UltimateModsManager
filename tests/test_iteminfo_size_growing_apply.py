@@ -137,6 +137,95 @@ def test_rebuild_iteminfo_pabgh_returns_none_when_key_missing():
     assert _rebuild_iteminfo_pabgh(vanilla_header, new_offsets) is None
 
 
+def test_iteminfo_writer_refuses_grown_pabgb_when_pabgh_rebuild_fails(caplog):
+    """Fail-closed contract: when serialization grew the body but the
+    .pabgh rebuild can't produce a complete index, refuse to ship the
+    .pabgb at all. Without this guard the apply would write the grown
+    .pabgb but keep the vanilla .pabgh — items past the growth point
+    would resolve to wrong bytes at runtime and the game would crash
+    on load (pitonpp My_ItemBuffs_Mod, 2026-05-21).
+
+    Drives the contract through the public writer entry point instead
+    of the helper so it covers the call-site decision, not just
+    _rebuild_iteminfo_pabgh's None return.
+    """
+    import json
+    import logging
+    from pathlib import Path
+
+    import pytest
+
+    from cdumm.engine.iteminfo_writer import (
+        build_iteminfo_intent_changes,
+    )
+    from cdumm.engine.iteminfo_native_parser import (
+        parse_iteminfo_from_bytes,
+        serialize_iteminfo_with_offsets,
+    )
+    from cdumm.engine.format3_handler import Format3Intent
+
+    # Need a real vanilla body — the same live-fixture gate as the
+    # other size-growing test.
+    live = Path(
+        "C:/Users/faisa/AppData/Local/Temp/iteminfo_postpatch.pabgb")
+    if not live.exists():
+        pytest.skip("iteminfo_postpatch.pabgb fixture not present")
+
+    body = live.read_bytes()
+    items = parse_iteminfo_from_bytes(body)
+    _, real_offsets = serialize_iteminfo_with_offsets(items)
+
+    # Build a synthetic vanilla_header that references a SHADOW KEY
+    # the parser doesn't expose. Mimics the production failure mode:
+    # the native parser's salvage path dropped a record, so a key
+    # present in vanilla.pabgh has no corresponding entry in the
+    # parsed items list.
+    shadow_key = max(k for k, _ in real_offsets) + 9_999_999
+    fake_header = bytearray(
+        struct.pack("<H", len(real_offsets) + 1))
+    for key, off in real_offsets:
+        fake_header += struct.pack("<II", key, off)
+    fake_header += struct.pack("<II", shadow_key, len(body))
+    fake_header = bytes(fake_header)
+
+    # Pick any intent that actually grows the body so the writer
+    # reaches the rebuild branch.
+    target = next(
+        it for it in items
+        if it.get("equip_passive_skill_list") is not None
+    )
+    new_list = list(target.get("equip_passive_skill_list") or [])
+    new_list.append({"skill_key": 9_999_999, "level": 1})
+    intent = Format3Intent(
+        entry=target.get("string_key", str(target["key"])),
+        key=target["key"],
+        field="equip_passive_skill_list",
+        op="set",
+        new=new_list,
+    )
+
+    with caplog.at_level(
+            logging.ERROR, logger="cdumm.engine.iteminfo_writer"):
+        changes = build_iteminfo_intent_changes(
+            body, [intent], vanilla_header=fake_header)
+
+    # If this intent didn't actually grow the buffer on this game
+    # version, the writer takes the same-size branch and returns
+    # `[pabgb_change]` with no .pabgh — that's the correct path
+    # for that case; skip the assertion.
+    if changes and len(bytes.fromhex(changes[0]["patched"])) == len(body):
+        pytest.skip("intent didn't grow the buffer; can't test fail-closed")
+
+    assert changes == [], (
+        f"expected [] when .pabgh rebuild fails on a grown .pabgb, "
+        f"got {len(changes)} change(s)")
+    assert any(
+        "Refusing to apply" in r.getMessage()
+        for r in caplog.records), (
+        "expected an ERROR log explaining the refusal so the user "
+        "can act on the failure")
+
+
 def test_iteminfo_writer_emits_pabgh_change_on_growth():
     """When an intent grows an item past the vanilla's serialized
     size, ``build_iteminfo_intent_changes`` must emit a sibling
